@@ -1,3 +1,5 @@
+db.conf
+
 # Large temporary files used for graph/figure generation
 paper/data/npm_transitive_results
 paper/data/pypi_transitive_results

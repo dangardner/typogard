@@ -1,30 +1,66 @@
 # TypoGard
-TypoGard is a client-side tool created to protect users from [package typosquatting attacks](https://snyk.io/blog/typosquatting-attacks/). TypoGard can was originally implemented as a standalone tool for npm, but it can easily be extended to other languages and can even be embedded in package installation software.
+TypoGard is a client-side tool created to protect users from [package typosquatting attacks](https://snyk.io/blog/typosquatting-attacks/). TypoGard was originally implemented as a standalone tool for npm, but it can easily be extended to other languages and can even be embedded in package installation software.
+
+# TypoGard-Crates
+TypoGard-Crates is a fork of TypoGard with support for the [crates.io](https://crates.io/) registry. It implements the following additional features:
+* Queries a local Postgres instance containing a nightly crates.io database dump
+* Bit-flip detection - detects single bit-flip variations of popular crates
+* Filtering based on similarity of package descriptions (using [spacy NLP](https://spacy.io/), falling back to Levenshtein distance)
+* Uses crate authors instead of namespaces to identify common ownership
+* Downloads tarballs of potentially typosquatting crates, to make investigation more convenient
+* Ignores known non-malicious typosquatters with expected metadata signatures:
+  * blallo - <https://troubles.noblogs.org/post/2021/03/29/why-so-much-ado-with-crates-io/>
+  * skerkour - <https://kerkour.com/rust-crate-backdoor>
 
 ## How TypoGard Works
 TypoGard works by applying a number of transformations to a given package name and comparing the results to a list of popular package names. These transformations are based on the same transformations made by malicious actors in past package typosquatting attacks. For more detailed information, read the [TypoGard paper on arXiv](https://arxiv.org/abs/2003.03471) (the tool was referred to as SpellBound at the time of publication).
 
-## TypoGard Requirements
-The version of TypoGard in this repository, which specifically targets npm, relies on the following:
-* [Python3](https://www.python.org/downloads/) (tested with Python 3.9.4, but other versions may work too)
-* [Node.js](https://nodejs.org/en/) (with version 16.13.0, but other versions may work too)
-* [npm-remote-ls](https://www.npmjs.com/package/npm-remote-ls) (an npm package that lists npm package dependencies. The exact version of this package and all dependencies can be found in package-lock.json)
+## TypoGard-Crates Requirements
+The version of TypoGard in this repository, which specifically targets crates.io, relies on the following:
+* [Python3](https://www.python.org/downloads/) (tested with Python 3.7.10, but other versions may work too)
+* [psycopg2](https://pypi.org/project/psycopg2/) for Postgres client functionality
+* [spaCy](https://pypi.org/project/spacy/) for NLP-based crate description similarity scoring
+* [semver](https://pypi.org/project/semver/) to compare semantic versions of crates
+* [requests](https://pypi.org/project/requests/) to fetch crate tarballs from crates.io
+* [blip](https://pypi.org/project/blip/) to calculate single bit-flip variations
+* [rapidfuzz](https://pypi.org/project/rapidfuzz/) to calculate Levenshtein distance
 
-## TypoGard Usage
+## TypoGard-Crates Usage
 
-`python3 typogard_npm.py [popular_package_list_filename] [package_name]`
+```
+usage: typogard_crates.py [-h] [--days CHECK_DAYS] [--top MOST_POPULAR]
+                          [--similarity-threshold SIMILARITY_THRESHOLD]
+                          [--lev-threshold LEVENSHTEIN_THRESHOLD]
+                          [--download-dir CRATE_DOWNLOAD_DIR]
+                          [--dbconf DB_CONFIG]
 
-TypoGard fundementally relies on a list of packages considered to be popular. Users can specify this list, which contains a different popular package name on each line, through the `popular_package_list_filename` command line argument. A sample file, `popular_npm_packages_sample.txt`, containing the top ~1% of popular npm packages based on total downloads has been included in this repository.
-The `package_name` argument is used to specify which package (along with all, if any, of its transitive dependencies) should be checked for typosquatting.
+optional arguments:
+  -h, --help            show this help message and exit
+  --days CHECK_DAYS     Only check for crates with versions created/updated
+                        within this number of days (default: 3)
+  --top MOST_POPULAR    Number of most popular crates to consider as
+                        typosquatting targets (default: 3000)
+  --similarity-threshold SIMILARITY_THRESHOLD
+                        Similarity threshold in the range 0-1, over which we
+                        consider crate descriptions similar (default: 0.97)
+  --lev-threshold LEVENSHTEIN_THRESHOLD
+                        Levenshtein distance threshold under which we consider
+                        crate descriptions similar (default: 10)
+  --download-dir CRATE_DOWNLOAD_DIR
+                        Directory into which discovered crates will be
+                        downloaded, will be created if necessary (default:
+                        /var/tmp/cratefiles)
+  --dbconf DB_CONFIG    Database configuration file (default: db.conf)
+```
+
+TypoGard fundamentally relies on a list of packages considered to be popular. TypoGard-Crates uses the nightly database dump from crates.io, allowing the user to specify the number of most popular crates with which to populate this list, and how many days in the past to look for newly published crate versions that may be typosquatting the most popular crates.
+
+The database configuration file specified with `--dbconf` is in the standard psycopg2 format. See the file `db.conf.example` for an example configuration.
 
 ### Example Usage:
 
-If one would like to determine whether the theoretical package `event_stream` is typosquatting any popular packages, they could use:
+If one would like to determine whether any crates with new versions published in the last 3 days are typosquatting any of the 3000 most popular packages, they could use:
 
-`python3 typogard_npm.py popular_npm_packages_sample.txt event_stream`
+`python3 typogard_crates.py`
 
-This will notify the user that `event_stream` could be typosquatting the popular package `event-stream`.
-
-## Integration with npm
-
-We have included a proof-of-concept modified version of the npm package installer which runs TypoGard prior to installation. You can find it under _paper/npm/modified_installer.zip_.
+This will notify the user and download the tarballs of any crates that appear to be typosquatting.
