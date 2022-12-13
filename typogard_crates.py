@@ -668,10 +668,14 @@ def filter_targets(nlp, package, potential_targets):
             if d is not None and d.strip() != '':
                 thisdoc = nlp(d)
                 if not thisdoc.vector_norm:
-                    raise ValueError(f"No vector_norm for potential target {t} ({d})")
-                sim = refdoc.similarity(thisdoc)
-                if sim > args.similarity_threshold:
-                    targets[t] = sim
+                    # fall back to Levenshtein
+                    dist = Levenshtein.distance(crates[package]['description'], crates[t]['description'])
+                    if dist < args.levenshtein_threshold:
+                        targets[t] = dist
+                else:
+                    sim = refdoc.similarity(thisdoc)
+                    if sim > args.similarity_threshold:
+                        targets[t] = sim
     return targets
 
 
