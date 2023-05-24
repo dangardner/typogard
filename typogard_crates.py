@@ -70,6 +70,11 @@ ALLOWED_CHARACTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz123456
 # Regular expression for valid crate names
 CRATE_NAME_REGEX = re.compile('^[A-Za-z0-9_-]+$')
 
+# Verified crates with names resembling other crates
+ALLOWED_CRATES = {
+    'no-std-compat2': [ 'no-std-compat' ], # fork
+}
+
 # Dictionary containing reasonable typos for each of the allowed
 # characters based on QWERTY keyboard locality and visual
 # similarity
@@ -570,6 +575,25 @@ def get_crates_to_check(cur, limit, days):
     return cur.fetchall()
 
 
+def get_one_crate_to_check(cur, crate_name):
+    cur.execute("""
+        SELECT
+            crates.name AS name,
+            COALESCE(users.gh_login, teams.login) AS login,
+            crates.homepage AS homepage,
+            crates.repository AS repository,
+            crates.documentation AS documentation,
+            crates.description AS description,
+            crates.downloads AS downloads
+        FROM crates
+        LEFT JOIN crate_owners ON (crates.id = crate_owners.crate_id)
+        LEFT JOIN users ON (crate_owners.owner_id = users.id AND crate_owners.owner_kind = 0 AND NOT crate_owners.deleted)
+        LEFT JOIN teams ON (crate_owners.owner_id = teams.id AND crate_owners.owner_kind = 1 AND NOT crate_owners.deleted)
+        WHERE crates.name = %s
+        LIMIT 1""", (crate_name,))
+    return cur.fetchall()
+
+
 def get_latest_version(cur, package_name):
     cur.execute("""
         SELECT
@@ -625,11 +649,21 @@ def populate_crate_lists(cur):
     global popular_package_set
     popular_package_set = set(popular_package_list)
     if len(popular_package_set) != args.most_popular:
-        print(f"Popular package set size mismatch ({len(popular_package_set)} != {args.most_popular})")
+        print(f"Popular package set size mismatch ({len(popular_package_set)} != {args.most_popular})", file=sys.stderr)
         sys.exit(1)
 
     # Get the rest of the crates to check
-    other_crates_with_authors = get_crates_to_check(cur, args.most_popular, args.check_days)
+    if args.single is not None:
+        if args.single in popular_package_set:
+            print(f"The '{args.single}' crate is in the {args.most_popular} most popular crates. Try reducing --top.", file=sys.stderr)
+            sys.exit(2)
+        other_crates_with_authors = get_one_crate_to_check(cur, args.single)
+        if len(other_crates_with_authors) == 0:
+            print(f"No crate named '{args.single}' found in the crates.io database.", file=sys.stderr)
+            sys.exit(3)
+    else:
+        other_crates_with_authors = get_crates_to_check(cur, args.most_popular, args.check_days)
+
     for r in other_crates_with_authors:
         c = crates.setdefault(r['name'], {
             **{ k:r[k] for k in r.keys() if k != 'login' },
@@ -676,6 +710,11 @@ def filter_targets(nlp, package, potential_targets):
                     sim = refdoc.similarity(thisdoc)
                     if sim > args.similarity_threshold:
                         targets[t] = sim
+    # Filter allowed crates from potential targets
+    if package in ALLOWED_CRATES:
+        for t in tuple(targets.keys()):
+            if t in ALLOWED_CRATES[package]:
+                del targets[t]
     return targets
 
 
@@ -706,6 +745,10 @@ def parse_arguments():
                         default=DEFAULT_DB_CONFIG,
                         dest="db_config",
                         help="Database configuration file")
+    parser.add_argument("--single", type=str,
+                        default=None,
+                        dest="single",
+                        help="Check only the specified crate (ignores check_days)")
     args = parser.parse_args()
 
 
