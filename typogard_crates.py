@@ -72,7 +72,9 @@ CRATE_NAME_REGEX = re.compile('^[A-Za-z0-9_-]+$')
 
 # Verified crates with names resembling other crates
 ALLOWED_CRATES = {
+    'maplit2': [ 'maplit' ], # "Successor to maplit"
     'no-std-compat2': [ 'no-std-compat' ], # fork
+    'eusb': [ 'rusb' ], # no obvious relation
 }
 
 # Dictionary containing reasonable typos for each of the allowed
@@ -496,8 +498,12 @@ def get_typosquatting_targets(package_name: str, nlp) -> List[str]:
     # Remove any duplicate package names
     potential_typosquatting_targets = list(set(potential_typosquatting_targets))
 
-    # Filter potential targets according to other metadata (description etc.)
-    potential_typosquatting_targets = filter_targets(nlp, package_name, potential_typosquatting_targets)
+    # Filter potential targets according to descriptions
+    if args.check_descriptions:
+        potential_typosquatting_targets = filter_descriptions(nlp, package_name, potential_typosquatting_targets)
+
+    # Filter allow-listed crates
+    potential_typosquatting_targets = filter_allowed_crates(package_name, potential_typosquatting_targets)
 
     # Return possible targets
     return potential_typosquatting_targets
@@ -537,6 +543,7 @@ def get_top_crates(cur, limit):
             SELECT crates.*, recent_crate_downloads.downloads AS recent_downloads
             FROM crates
             LEFT JOIN recent_crate_downloads ON (crates.id = recent_crate_downloads.crate_id)
+            WHERE recent_crate_downloads.downloads IS NOT NULL
             ORDER BY recent_crate_downloads.downloads DESC
             LIMIT %s
         ) AS crates
@@ -561,6 +568,7 @@ def get_crates_to_check(cur, limit, days):
             SELECT crates.*, recent_crate_downloads.downloads AS recent_downloads
             FROM crates
             LEFT JOIN recent_crate_downloads ON (crates.id = recent_crate_downloads.crate_id)
+            WHERE recent_crate_downloads.downloads IS NOT NULL
             ORDER BY recent_crate_downloads.downloads DESC
             OFFSET %s
         ) AS crates
@@ -613,6 +621,9 @@ def download_latest(cur, package_name):
         return None
     url = CRATE_DOWNLOAD_URL.format(package_name, ver)
     r = requests.get(url, allow_redirects=False)
+    if r.status_code == 404:
+        print(f"Not Found HTTP response {r.status_code} fetching {url}, crate may have been removed from the registry")
+        return None
     if r.status_code != 302:
         raise RuntimeError(f"Unexpected HTTP response {r.status_code} fetching {url}")
     if 'location' not in r.headers:
@@ -622,6 +633,9 @@ def download_latest(cur, package_name):
     if CRATE_FILE_REGEX.search(crate_file) is None:
         raise RuntimeError(f"Invalid crate filename {crate_file} from {url}")
     r = requests.get(loc, allow_redirects=False)
+    if r.status_code == 404:
+        print(f"Not Found HTTP response {r.status_code} fetching {loc}, crate may have been removed from the registry")
+        return None
     if r.status_code != 200:
         raise RuntimeError(f"Unexpected HTTP response {r.status_code} fetching {loc}")
     local_file = os.path.join(args.crate_download_dir, crate_file)
@@ -684,7 +698,7 @@ def generate_bitflips():
             popular_bitflips.setdefault(bf, []).append(crate_name)
 
 
-def filter_targets(nlp, package, potential_targets):
+def filter_descriptions(nlp, package, potential_targets):
     # Retain only potential typosquatters with similar descriptions
     if crates[package]['description'] is None or crates[package]['description'].strip() == '':
         return { t:100 for t in potential_targets if crates[t]['description'] is None or crates[t]['description'].strip() == '' }
@@ -710,6 +724,10 @@ def filter_targets(nlp, package, potential_targets):
                     sim = refdoc.similarity(thisdoc)
                     if sim > args.similarity_threshold:
                         targets[t] = sim
+    return targets
+
+
+def filter_allowed_crates(package, targets):
     # Filter allowed crates from potential targets
     if package in ALLOWED_CRATES:
         for t in tuple(targets.keys()):
@@ -749,6 +767,9 @@ def parse_arguments():
                         default=None,
                         dest="single",
                         help="Check only the specified crate (ignores check_days)")
+    parser.add_argument("--check-descriptions", action='store_true',
+                        dest="check_descriptions",
+                        help="Additionally compare descriptions for similarity (NOTE: may result in false negatives)")
     args = parser.parse_args()
 
 
